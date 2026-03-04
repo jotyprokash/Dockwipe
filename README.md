@@ -100,21 +100,6 @@ dockwipe --full
 | `--dry-run` | Preview actions without executing |
 | `--version` | Show dockwipe version |
 
----
-
-## Project Structure
-
-```
-dockwipe
-├── dockwipe          # main CLI script
-├── install.sh        # installation helper
-├── README.md         # project documentation
-├── LICENSE
-└── docs
-    └── usage.md
-```
-
----
 
 ## Requirements
 
@@ -122,7 +107,6 @@ dockwipe
 - Docker installed
 - Bash shell
 
----
 
 ## Notes
 
@@ -137,11 +121,9 @@ dockwipe
 - Use `--no-color` if you prefer plain output.
 - If permission errors occur, run the command with `sudo` or add your user to the Docker group.
 
----
 
 ## License
 
 MIT License
 
----
 
