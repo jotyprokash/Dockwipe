@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# dockwipe - Docker cleanup & reset CLI
+# License: MIT
+
+set -euo pipefail
+
+VERSION="1.1.0"
+
+DRY_RUN=false
+QUIET=false
+NO_COLOR=false
+
+# --------- UI helpers ----------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[1;35m'
+CYAN='\033[1;36m'
+NC='\033[0m'
+
+_color() {
+  if $NO_COLOR || [[ ! -t 1 ]]; then
+    printf '%s' ""
+  else
+    printf '%b' "$1"
+  fi
+}
+
+log()  { $QUIET || echo -e "$(_color "$BLUE")[dockwipe]$(_color "$NC") $*"; }
+ok()   { $QUIET || echo -e "$(_color "$GREEN")[ok]$(_color "$NC") $*"; }
+warn() { $QUIET || echo -e "$(_color "$YELLOW")[warn]$(_color "$NC") $*"; }
+err()  { echo -e "$(_color "$RED")[error]$(_color "$NC") $*" 1>&2; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+run() {
+  local cmd="$*"
+  if $DRY_RUN; then
+    echo "[dry-run] $cmd"
+  else
+    eval "$cmd"
+  fi
+}
+
+sudo_run() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    run "$*"
+  else
+    run "sudo $*"
+  fi
+}
+
+confirm() {
+  local prompt="${1:-This action is destructive. Continue?}"
+  local ans=""
+  read -r -p "$prompt (yes/no): " ans
+  if [[ "$ans" != "yes" ]]; then
+    warn "Aborted."
+    exit 0
+  fi
+}
+
+print_banner() {
+  $QUIET && return 0
+  [[ -t 1 ]] || return 0
+
+  echo -e "$(_color "$CYAN")"
+  echo "██████╗  ██████╗  ██████╗██╗  ██╗██╗    ██╗██╗██████╗ ███████╗"
+  echo "██╔══██╗██╔═══██╗██╔════╝██║ ██╔╝██║    ██║██║██╔══██╗██╔════╝"
+  echo "██║  ██║██║   ██║██║     █████╔╝ ██║ █╗ ██║██║██████╔╝█████╗  "
+  echo "██║  ██║██║   ██║██║     ██╔═██╗ ██║███╗██║██║██╔═══╝ ██╔══╝  "
+  echo "██████╔╝╚██████╔╝╚██████╗██║  ██╗╚███╔███╔╝██║██║     ███████╗"
+  echo "╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚═╝╚═╝     ╚══════╝"
+  echo -e "$(_color "$NC")"
+
+  echo -e "$(_color "$GREEN")⚡ Docker Cleanup & Reset CLI$(_color "$NC")"
+  echo -e "$(_color "$YELLOW")🚀 DevOps tool for keeping Docker environments clean$(_color "$NC")"
+  echo
+
+  echo -e "$(_color "$PURPLE")Version :$(_color "$NC") $VERSION"
+  echo -e "$(_color "$PURPLE")Author  :$(_color "$NC") Joty Prokash Mondal"
+
+  echo -e "$(_color "$BLUE")────────────────────────────────────────────────────$(_color "$NC")"
+  echo
+}
+
+need_docker() {
+  if ! have docker; then
+    err "docker CLI not found. Install Docker first."
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    err "Docker daemon is not running (or you don't have permission)."
+    err "Try: sudo systemctl start docker  (or add your user to the docker group)"
+    exit 1
+  fi
+}
+
+need_root_for_full() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]] && ! have sudo; then
+    err "sudo not found. Run as root or install sudo."
+    exit 1
+  fi
+}
+
+is_systemd() {
+  [[ -d /run/systemd/system ]] && have systemctl
+}
+
+stop_services() {
+  if is_systemd; then
+    log "Stopping Docker services (systemd)..."
+    sudo_run systemctl stop docker || true
+    sudo_run systemctl stop containerd || true
+  else
+    warn "systemd not detected. Attempting best-effort daemon stop..."
+    sudo_run service docker stop || true
+    sudo_run service containerd stop || true
+    sudo_run pkill -f dockerd || true
+    sudo_run pkill -f containerd || true
+  fi
+}
+
+start_services() {
+  if is_systemd; then
+    log "Starting Docker services (systemd)..."
+    sudo_run systemctl start containerd || true
+    sudo_run systemctl start docker || true
+  else
+    warn "systemd not detected. Attempting best-effort daemon start..."
+    sudo_run service containerd start || true
+    sudo_run service docker start || true
+  fi
+}
+
+cmd_status() {
+  need_docker
+  log "Docker disk usage:"
+  docker system df || true
+}
+
+cmd_analyze() {
+  need_docker
+  log "Analyze: Docker disk usage summary"
+  docker system df || true
+
+  echo ""
+  log "Analyze: Top images (first 15)"
+  docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.ID}}' \
+    | sort -hr -k2 2>/dev/null \
+    | head -n 15 || true
+
+  echo ""
+  log "Analyze: Volumes (first 20 names)"
+  docker volume ls || true
+  echo ""
+  docker volume ls -q | head -n 20 | sed 's/^/ - /' || true
+
+  echo ""
+  log "Analyze: Containers (running + exited)"
+  docker ps -a || true
+
+  echo ""
+  log "Analyze: Docker directories size (best effort)"
+  if have du; then
+    for p in /var/lib/docker /var/lib/containerd; do
+      if [[ -d "$p" ]]; then
+        du -sh "$p" 2>/dev/null || true
+        du -h --max-depth=1 "$p" 2>/dev/null | sort -hr | head -n 10 || true
+      else
+        warn "$p not found (ok on some systems)."
+      fi
+      echo ""
+    done
+  else
+    warn "'du' not found; skipping directory sizing."
+  fi
+
+  ok "Analyze complete."
+}
+
+cmd_containers() {
+  need_docker
+  log "Removing all containers..."
+  run "docker ps -aq | xargs -r docker rm -f"
+  ok "Containers removed."
+}
+
+cmd_images() {
+  need_docker
+  log "Removing all images..."
+  run "docker images -aq | xargs -r docker rmi -f"
+  ok "Images removed."
+}
+
+cmd_volumes() {
+  need_docker
+  log "Removing all volumes..."
+  run "docker volume ls -q | xargs -r docker volume rm"
+  ok "Volumes removed."
+}
+
+cmd_networks() {
+  need_docker
+  log "Removing custom networks (keeping bridge/host/none)..."
+  run "docker network ls --format '{{.Name}}' | grep -Ev '^(bridge|host|none)$' | xargs -r docker network rm"
+  ok "Networks cleaned."
+}
+
+cmd_cache() {
+  need_docker
+  log "Removing Docker build cache..."
+  run "docker builder prune -a -f || true"
+  ok "Build cache cleaned."
+}
+
+cmd_smart() {
+  need_docker
+  confirm "Smart cleanup removes unused Docker objects (may delete unused images/volumes). Continue?"
+  log "Running: docker system prune -f"
+  run "docker system prune -f || true"
+  log "Running: docker builder prune -f"
+  run "docker builder prune -f || true"
+  ok "Smart cleanup complete."
+}
+
+cmd_full() {
+  need_root_for_full
+
+  confirm "FACTORY RESET will delete ALL Docker data and wipe /var/lib/docker + /var/lib/containerd. Continue?"
+  log "Factory reset starting..."
+
+  if have docker && docker info >/dev/null 2>&1; then
+    warn "Attempting Docker-level cleanup first (best effort)..."
+    run "docker system prune -a --volumes -f || true"
+    run "docker builder prune -a -f || true"
+  else
+    warn "Docker daemon not reachable; proceeding with filesystem reset."
+  fi
+
+  stop_services
+
+  log "Wiping Docker + containerd state..."
+  sudo_run rm -rf /var/lib/docker
+  sudo_run rm -rf /var/lib/containerd
+  sudo_run rm -rf /var/run/docker
+  sudo_run rm -rf /var/run/containerd
+  sudo_run rm -rf /run/docker
+  sudo_run rm -rf /run/containerd
+
+  log "Recreating required directories..."
+  sudo_run mkdir -p /var/lib/docker
+  sudo_run mkdir -p /var/lib/containerd
+
+  start_services
+
+  echo ""
+  ok "Docker factory reset complete."
+  echo ""
+  docker system df || true
+  echo ""
+  log "Networks after reset (expect bridge/host/none only):"
+  docker network ls || true
+}
+
+usage() {
+  cat <<'EOF'
+dockwipe - Docker cleanup & reset tool
+
+Usage:
+  dockwipe --status
+  dockwipe --analyze
+  dockwipe --smart
+  dockwipe --containers
+  dockwipe --images
+  dockwipe --volumes
+  dockwipe --networks
+  dockwipe --cache
+  dockwipe --full
+
+Global options:
+  --dry-run    Print actions without executing (for destructive commands)
+  --quiet      Less output
+  --no-color   Disable ANSI colors
+  --version    Print version
+  --help       Show this help
+
+Examples:
+  dockwipe --analyze
+  dockwipe --smart
+  dockwipe --dry-run --full
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  print_banner
+  usage
+  exit 0
+fi
+
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY_RUN=true ;;
+    --quiet) QUIET=true ;;
+    --no-color) NO_COLOR=true ;;
+    --help|-h) print_banner; usage; exit 0 ;;
+    --version) echo "dockwipe v$VERSION"; exit 0 ;;
+    *) ARGS+=("$a") ;;
+  esac
+done
+
+print_banner
+
+cmd="${ARGS[0]:-}"
+case "$cmd" in
+  --status)     cmd_status ;;
+  --analyze)    cmd_analyze ;;
+  --smart)      cmd_smart ;;
+  --containers) cmd_containers ;;
+  --images)     cmd_images ;;
+  --volumes)    cmd_volumes ;;
+  --networks)   cmd_networks ;;
+  --cache)      cmd_cache ;;
+  --full)       cmd_full ;;
+  *) usage; exit 1 ;;
+esac
