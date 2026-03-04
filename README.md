@@ -1,4 +1,4 @@
-# dockwipe
+# Dockwipe
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Language](https://img.shields.io/badge/language-bash-green)
@@ -9,35 +9,7 @@ dockwipe is a lightweight command-line utility for inspecting, cleaning, and res
 
 If you work with Docker regularly, containers, images, volumes, and networks tend to accumulate over time. dockwipe provides a simple way to check what is consuming disk space, clean unused resources, and fully reset Docker when needed.
 
----
 
-## Demo
-
-![dockwipe demo](demo/dockwipe-demo.gif)
-
----
-
-## Quick Demo
-
-Analyze Docker disk usage:
-
-```bash
-dockwipe --analyze
-```
-
-Clean unused Docker resources:
-
-```bash
-dockwipe --smart
-```
-
-Completely reset Docker environment:
-
-```bash
-dockwipe --full
-```
-
----
 
 ## Why dockwipe?
 
@@ -52,7 +24,7 @@ dockwipe was built to make it easier to:
 
 It is especially useful for developers, DevOps engineers, and lab environments where containers are created and destroyed frequently.
 
----
+
 
 ## Installation
 
@@ -77,25 +49,6 @@ Verify installation:
 dockwipe --help
 ```
 
----
-
-## Install via Release
-
-You can also download the latest release directly.
-
-```bash
-curl -L https://github.com/YOUR_USERNAME/dockwipe/releases/latest/download/dockwipe -o dockwipe
-chmod +x dockwipe
-sudo mv dockwipe /usr/local/bin/
-```
-
-Verify installation:
-
-```bash
-dockwipe --version
-```
-
----
 
 ## Usage
 
