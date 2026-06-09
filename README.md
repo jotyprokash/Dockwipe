@@ -44,18 +44,6 @@ Automation-friendly cleanup:
 dockwipe clean --yes
 ```
 
-Use a retention filter:
-
-```bash
-dockwipe clean --older-than 7d --yes
-```
-
-Include build cache cleanup:
-
-```bash
-dockwipe clean --older-than 7d --include-build-cache --yes
-```
-
 ## Commands
 
 | Command | Purpose |
@@ -64,9 +52,7 @@ dockwipe clean --older-than 7d --include-build-cache --yes
 | `analyze` | Show Docker usage details |
 | `plan` | Preview safe cleanup behavior |
 | `clean` | Clean unused resources without stopping running services |
-| `--older-than VALUE` | Apply a Docker prune retention filter, for example `7d` or `24h` |
 | `--yes` | Skip confirmation for safe automation |
-| `--include-build-cache` | Include build cache in `clean` |
 | `--dry-run` | Print actions without executing them |
 
 ## Safety
@@ -85,7 +71,15 @@ Manual destructive commands are isolated under:
 dockwipe danger help
 ```
 
-Danger commands require an exact confirmation phrase and ignore `--yes`. Do not run them from cron.
+Danger commands include broad cleanup and reset operations:
+
+```bash
+dockwipe danger cache
+dockwipe danger volumes
+dockwipe danger full
+```
+
+They require an exact confirmation phrase and ignore `--yes`. Do not run them from cron.
 
 ## Cron
 
@@ -99,12 +93,6 @@ Run safe cleanup every morning at 10 AM:
 
 ```cron
 0 10 * * * /usr/local/bin/dockwipe clean --yes >> /var/log/dockwipe/cleanup.log 2>&1
-```
-
-With retention and build cache cleanup:
-
-```cron
-0 10 * * * /usr/local/bin/dockwipe clean --older-than 7d --include-build-cache --yes >> /var/log/dockwipe/cleanup.log 2>&1
 ```
 
 ## Requirements

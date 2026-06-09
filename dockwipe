@@ -4,14 +4,12 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 DRY_RUN=false
 QUIET=false
 NO_COLOR=false
 YES=false
-OLDER_THAN="${DOCKWIPE_OLDER_THAN:-}"
-PRUNE_BUILD_CACHE=false
 PRUNE_ANON_VOLUMES=false
 
 # --------- UI helpers ----------
@@ -103,32 +101,6 @@ danger_confirm() {
   if [[ "$ans" != "$phrase" ]]; then
     warn "Aborted."
     exit 0
-  fi
-}
-
-load_config() {
-  local config="${DOCKWIPE_CONFIG:-/etc/dockwipe/config}"
-
-  if [[ -f "$config" ]]; then
-    # shellcheck source=/dev/null
-    source "$config"
-    OLDER_THAN="${OLDER_THAN:-${DEFAULT_OLDER_THAN:-}}"
-    PRUNE_BUILD_CACHE="${DEFAULT_PRUNE_BUILD_CACHE:-$PRUNE_BUILD_CACHE}"
-    PRUNE_ANON_VOLUMES="${DEFAULT_PRUNE_ANON_VOLUMES:-$PRUNE_ANON_VOLUMES}"
-  fi
-}
-
-filter_args() {
-  if [[ -n "$OLDER_THAN" ]]; then
-    printf '%s\n' --filter "until=$OLDER_THAN"
-  fi
-}
-
-print_retention() {
-  if [[ -n "$OLDER_THAN" ]]; then
-    log "Retention filter: resources older than $OLDER_THAN"
-  else
-    warn "No retention filter set; Docker will prune all unused resources in the selected categories."
   fi
 }
 
@@ -288,7 +260,6 @@ cmd_cache() {
 
 cmd_plan() {
   need_docker
-  print_retention
 
   echo ""
   log "Safe cleanup plan"
@@ -300,11 +271,7 @@ cmd_plan() {
   echo " - unused Docker networks selected by Docker prune"
   echo " - dangling images selected by Docker prune"
   echo " - unused images selected by Docker prune"
-  if $PRUNE_BUILD_CACHE; then
-    echo " - build cache selected by Docker builder prune"
-  else
-    echo " - build cache: skipped unless --include-build-cache is set"
-  fi
+  echo " - build cache: skipped; use dockwipe danger cache if needed"
   echo " - volumes: skipped by default"
 
   echo ""
@@ -321,17 +288,9 @@ cmd_plan() {
 
   echo ""
   log "Preview commands:"
-  if [[ -n "$OLDER_THAN" ]]; then
-    echo " docker container prune -f --filter until=$OLDER_THAN"
-    echo " docker network prune -f --filter until=$OLDER_THAN"
-    echo " docker image prune -a -f --filter until=$OLDER_THAN"
-    $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f --filter until=$OLDER_THAN"
-  else
-    echo " docker container prune -f"
-    echo " docker network prune -f"
-    echo " docker image prune -a -f"
-    $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f"
-  fi
+  echo " docker container prune -f"
+  echo " docker network prune -f"
+  echo " docker image prune -a -f"
 
   ok "Plan complete. Run dockwipe clean --yes to apply in automation."
 }
@@ -343,29 +302,19 @@ cmd_safe() {
   fi
 
   need_docker
-  print_retention
 
   confirm "Safe cleanup removes unused Docker resources while keeping running services. Continue?" true
 
-  local filters=()
-  mapfile -t filters < <(filter_args)
-
   log "Pruning stopped containers..."
-  run_args docker container prune -f "${filters[@]}" || true
+  run_args docker container prune -f || true
 
   log "Pruning unused networks..."
-  run_args docker network prune -f "${filters[@]}" || true
+  run_args docker network prune -f || true
 
   log "Pruning unused images..."
-  run_args docker image prune -a -f "${filters[@]}" || true
+  run_args docker image prune -a -f || true
 
-  if $PRUNE_BUILD_CACHE; then
-    log "Pruning build cache..."
-    run_args docker builder prune -a -f "${filters[@]}" || true
-  else
-    log "Skipping build cache. Use --include-build-cache to include it."
-  fi
-
+  log "Skipping build cache. Use dockwipe danger cache if needed."
   log "Skipping volumes by default."
 
   echo ""
@@ -475,9 +424,7 @@ Usage:
   dockwipe danger help
 
 Global options:
-  --older-than VALUE          Apply Docker prune retention filter, for example 7d or 24h
   --yes                      Do not prompt for safe automation runs
-  --include-build-cache      Include build cache in safe cleanup
   --dry-run                  Print actions without executing
   --quiet                    Less output
   --no-color                 Disable ANSI colors
@@ -486,8 +433,8 @@ Global options:
 
 Examples:
   dockwipe status
-  dockwipe plan --older-than 7d
-  dockwipe clean --older-than 7d --yes
+  dockwipe plan
+  dockwipe clean --yes
 EOF
 }
 
@@ -509,8 +456,6 @@ Do not run danger commands from cron.
 EOF
 }
 
-load_config
-
 if [[ $# -eq 0 ]]; then
   print_banner
   usage
@@ -524,22 +469,6 @@ while [[ $# -gt 0 ]]; do
     --quiet) QUIET=true ;;
     --no-color) NO_COLOR=true ;;
     --yes|-y) YES=true ;;
-    --older-than)
-      if [[ $# -lt 2 || "$2" == --* ]]; then
-        err "--older-than requires a value, for example 7d or 24h."
-        exit 1
-      fi
-      OLDER_THAN="$2"
-      shift
-      ;;
-    --older-than=*)
-      OLDER_THAN="${1#*=}"
-      if [[ -z "$OLDER_THAN" ]]; then
-        err "--older-than requires a value, for example 7d or 24h."
-        exit 1
-      fi
-      ;;
-    --include-build-cache|--prune-build-cache) PRUNE_BUILD_CACHE=true ;;
     --prune-anonymous-volumes) PRUNE_ANON_VOLUMES=true ;;
     --help|-h) print_banner; usage; exit 0 ;;
     --version) echo "dockwipe v$VERSION"; exit 0 ;;

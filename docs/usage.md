@@ -14,14 +14,12 @@ dockwipe clean
 ```bash
 dockwipe plan
 dockwipe clean --yes
-dockwipe clean --older-than 7d --yes
-dockwipe clean --older-than 7d --include-build-cache --yes
 ```
 
 ### Dry run
 
 ```bash
-dockwipe --dry-run clean --older-than 7d
+dockwipe --dry-run clean
 dockwipe --dry-run danger full
 ```
 
