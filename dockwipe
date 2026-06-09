@@ -4,11 +4,15 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 DRY_RUN=false
 QUIET=false
 NO_COLOR=false
+YES=false
+OLDER_THAN="${DOCKWIPE_OLDER_THAN:-}"
+PRUNE_BUILD_CACHE=false
+PRUNE_ANON_VOLUMES=false
 
 # --------- UI helpers ----------
 RED='\033[0;31m'
@@ -43,6 +47,16 @@ run() {
   fi
 }
 
+run_args() {
+  if $DRY_RUN; then
+    printf '[dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
 sudo_run() {
   if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     run "$*"
@@ -52,12 +66,44 @@ sudo_run() {
 }
 
 confirm() {
+  local allow_yes="${2:-false}"
+
+  if $YES && $allow_yes; then
+    return 0
+  fi
+
   local prompt="${1:-This action is destructive. Continue?}"
   local ans=""
   read -r -p "$prompt (yes/no): " ans
   if [[ "$ans" != "yes" ]]; then
     warn "Aborted."
     exit 0
+  fi
+}
+
+load_config() {
+  local config="${DOCKWIPE_CONFIG:-/etc/dockwipe/config}"
+
+  if [[ -f "$config" ]]; then
+    # shellcheck source=/dev/null
+    source "$config"
+    OLDER_THAN="${OLDER_THAN:-${DEFAULT_OLDER_THAN:-}}"
+    PRUNE_BUILD_CACHE="${DEFAULT_PRUNE_BUILD_CACHE:-$PRUNE_BUILD_CACHE}"
+    PRUNE_ANON_VOLUMES="${DEFAULT_PRUNE_ANON_VOLUMES:-$PRUNE_ANON_VOLUMES}"
+  fi
+}
+
+filter_args() {
+  if [[ -n "$OLDER_THAN" ]]; then
+    printf '%s\n' --filter "until=$OLDER_THAN"
+  fi
+}
+
+print_retention() {
+  if [[ -n "$OLDER_THAN" ]]; then
+    log "Retention filter: resources older than $OLDER_THAN"
+  else
+    warn "No retention filter set; Docker will prune all unused resources in the selected categories."
   fi
 }
 
@@ -215,6 +261,100 @@ cmd_cache() {
   ok "Build cache cleaned."
 }
 
+cmd_plan() {
+  need_docker
+  print_retention
+
+  echo ""
+  log "Safe cleanup plan"
+  echo "Dockwipe will keep running containers and Docker resources that are still in use."
+  echo ""
+
+  log "Will prune:"
+  echo " - stopped containers selected by Docker prune"
+  echo " - unused Docker networks selected by Docker prune"
+  echo " - dangling images selected by Docker prune"
+  echo " - unused images selected by Docker prune"
+  if $PRUNE_BUILD_CACHE; then
+    echo " - build cache selected by Docker builder prune"
+  else
+    echo " - build cache: skipped unless --prune-build-cache is set"
+  fi
+  if $PRUNE_ANON_VOLUMES; then
+    echo " - anonymous unused volumes selected by Docker volume prune"
+  else
+    echo " - volumes: skipped by default"
+  fi
+
+  echo ""
+  log "Currently protected by Docker state:"
+  printf ' - running containers: '
+  docker ps -q | wc -l | tr -d ' '
+  printf ' - images used by containers are not removed by Docker prune while referenced\n'
+  printf ' - mounted volumes are not removed by Docker prune while referenced\n'
+  printf ' - networks attached to containers are not removed by Docker prune while referenced\n'
+
+  echo ""
+  log "Current Docker disk usage:"
+  docker system df || true
+
+  echo ""
+  log "Preview commands:"
+  if [[ -n "$OLDER_THAN" ]]; then
+    echo " docker container prune -f --filter until=$OLDER_THAN"
+    echo " docker network prune -f --filter until=$OLDER_THAN"
+    echo " docker image prune -a -f --filter until=$OLDER_THAN"
+    $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f --filter until=$OLDER_THAN"
+    $PRUNE_ANON_VOLUMES && echo " docker volume prune -f"
+  else
+    echo " docker container prune -f"
+    echo " docker network prune -f"
+    echo " docker image prune -a -f"
+    $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f"
+    $PRUNE_ANON_VOLUMES && echo " docker volume prune -f"
+  fi
+
+  ok "Plan complete. Run dockwipe --safe --yes to apply in automation."
+}
+
+cmd_safe() {
+  need_docker
+  print_retention
+
+  confirm "Safe cleanup removes unused Docker resources while keeping running services. Continue?" true
+
+  local filters=()
+  mapfile -t filters < <(filter_args)
+
+  log "Pruning stopped containers..."
+  run_args docker container prune -f "${filters[@]}" || true
+
+  log "Pruning unused networks..."
+  run_args docker network prune -f "${filters[@]}" || true
+
+  log "Pruning unused images..."
+  run_args docker image prune -a -f "${filters[@]}" || true
+
+  if $PRUNE_BUILD_CACHE; then
+    log "Pruning build cache..."
+    run_args docker builder prune -a -f "${filters[@]}" || true
+  else
+    log "Skipping build cache. Use --prune-build-cache to include it."
+  fi
+
+  if $PRUNE_ANON_VOLUMES; then
+    warn "Pruning anonymous unused volumes because --prune-anonymous-volumes was set."
+    run_args docker volume prune -f || true
+  else
+    log "Skipping volumes by default."
+  fi
+
+  echo ""
+  log "Docker disk usage after safe cleanup:"
+  docker system df || true
+  ok "Safe cleanup complete."
+}
+
 cmd_smart() {
   need_docker
   confirm "Smart cleanup removes unused Docker objects (may delete unused images/volumes). Continue?"
@@ -271,6 +411,8 @@ dockwipe - Docker cleanup & reset tool
 Usage:
   dockwipe --status
   dockwipe --analyze
+  dockwipe --plan
+  dockwipe --safe
   dockwipe --smart
   dockwipe --containers
   dockwipe --images
@@ -280,18 +422,24 @@ Usage:
   dockwipe --full
 
 Global options:
-  --dry-run    Print actions without executing (for destructive commands)
-  --quiet      Less output
-  --no-color   Disable ANSI colors
-  --version    Print version
-  --help       Show this help
+  --older-than VALUE          Apply Docker prune retention filter, for example 7d or 24h
+  --yes                      Do not prompt for safe automation runs
+  --prune-build-cache        Include build cache in --safe cleanup
+  --prune-anonymous-volumes  Include anonymous unused volumes in --safe cleanup
+  --dry-run                  Print actions without executing
+  --quiet                    Less output
+  --no-color                 Disable ANSI colors
+  --version                  Print version
+  --help                     Show this help
 
 Examples:
   dockwipe --analyze
-  dockwipe --smart
-  dockwipe --dry-run --full
+  dockwipe --plan --older-than 7d
+  dockwipe --safe --older-than 7d --yes
 EOF
 }
+
+load_config
 
 if [[ $# -eq 0 ]]; then
   print_banner
@@ -300,15 +448,34 @@ if [[ $# -eq 0 ]]; then
 fi
 
 ARGS=()
-for a in "$@"; do
-  case "$a" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --dry-run) DRY_RUN=true ;;
     --quiet) QUIET=true ;;
     --no-color) NO_COLOR=true ;;
+    --yes|-y) YES=true ;;
+    --older-than)
+      if [[ $# -lt 2 || "$2" == --* ]]; then
+        err "--older-than requires a value, for example 7d or 24h."
+        exit 1
+      fi
+      OLDER_THAN="$2"
+      shift
+      ;;
+    --older-than=*)
+      OLDER_THAN="${1#*=}"
+      if [[ -z "$OLDER_THAN" ]]; then
+        err "--older-than requires a value, for example 7d or 24h."
+        exit 1
+      fi
+      ;;
+    --prune-build-cache) PRUNE_BUILD_CACHE=true ;;
+    --prune-anonymous-volumes) PRUNE_ANON_VOLUMES=true ;;
     --help|-h) print_banner; usage; exit 0 ;;
     --version) echo "dockwipe v$VERSION"; exit 0 ;;
-    *) ARGS+=("$a") ;;
+    *) ARGS+=("$1") ;;
   esac
+  shift
 done
 
 print_banner
@@ -317,6 +484,8 @@ cmd="${ARGS[0]:-}"
 case "$cmd" in
   --status)     cmd_status ;;
   --analyze)    cmd_analyze ;;
+  --plan)       cmd_plan ;;
+  --safe)       cmd_safe ;;
   --smart)      cmd_smart ;;
   --containers) cmd_containers ;;
   --images)     cmd_images ;;
