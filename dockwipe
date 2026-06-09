@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 DRY_RUN=false
 QUIET=false
@@ -76,6 +76,31 @@ confirm() {
   local ans=""
   read -r -p "$prompt (yes/no): " ans
   if [[ "$ans" != "yes" ]]; then
+    warn "Aborted."
+    exit 0
+  fi
+}
+
+danger_confirm() {
+  local phrase="$1"
+  local detail="$2"
+
+  if $YES; then
+    err "--yes is disabled for danger commands."
+    exit 1
+  fi
+
+  if $DRY_RUN; then
+    warn "Danger dry-run: commands will be printed, not executed."
+    return 0
+  fi
+
+  warn "$detail"
+  warn "This is isolated under 'dockwipe danger' because it can disrupt services or delete Docker data."
+
+  local ans=""
+  read -r -p "Type '$phrase' to continue: " ans
+  if [[ "$ans" != "$phrase" ]]; then
     warn "Aborted."
     exit 0
   fi
@@ -278,13 +303,9 @@ cmd_plan() {
   if $PRUNE_BUILD_CACHE; then
     echo " - build cache selected by Docker builder prune"
   else
-    echo " - build cache: skipped unless --prune-build-cache is set"
+    echo " - build cache: skipped unless --include-build-cache is set"
   fi
-  if $PRUNE_ANON_VOLUMES; then
-    echo " - anonymous unused volumes selected by Docker volume prune"
-  else
-    echo " - volumes: skipped by default"
-  fi
+  echo " - volumes: skipped by default"
 
   echo ""
   log "Currently protected by Docker state:"
@@ -305,19 +326,22 @@ cmd_plan() {
     echo " docker network prune -f --filter until=$OLDER_THAN"
     echo " docker image prune -a -f --filter until=$OLDER_THAN"
     $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f --filter until=$OLDER_THAN"
-    $PRUNE_ANON_VOLUMES && echo " docker volume prune -f"
   else
     echo " docker container prune -f"
     echo " docker network prune -f"
     echo " docker image prune -a -f"
     $PRUNE_BUILD_CACHE && echo " docker builder prune -a -f"
-    $PRUNE_ANON_VOLUMES && echo " docker volume prune -f"
   fi
 
-  ok "Plan complete. Run dockwipe --safe --yes to apply in automation."
+  ok "Plan complete. Run dockwipe clean --yes to apply in automation."
 }
 
 cmd_safe() {
+  if $PRUNE_ANON_VOLUMES; then
+    err "Volume pruning is isolated under: dockwipe danger volumes"
+    exit 1
+  fi
+
   need_docker
   print_retention
 
@@ -339,15 +363,10 @@ cmd_safe() {
     log "Pruning build cache..."
     run_args docker builder prune -a -f "${filters[@]}" || true
   else
-    log "Skipping build cache. Use --prune-build-cache to include it."
+    log "Skipping build cache. Use --include-build-cache to include it."
   fi
 
-  if $PRUNE_ANON_VOLUMES; then
-    warn "Pruning anonymous unused volumes because --prune-anonymous-volumes was set."
-    run_args docker volume prune -f || true
-  else
-    log "Skipping volumes by default."
-  fi
+  log "Skipping volumes by default."
 
   echo ""
   log "Docker disk usage after safe cleanup:"
@@ -356,8 +375,8 @@ cmd_safe() {
 }
 
 cmd_smart() {
+  danger_confirm "run smart prune" "Smart cleanup removes unused Docker objects and may remove resources needed for quick rebuilds."
   need_docker
-  confirm "Smart cleanup removes unused Docker objects (may delete unused images/volumes). Continue?"
   log "Running: docker system prune -f"
   run "docker system prune -f || true"
   log "Running: docker builder prune -f"
@@ -366,9 +385,9 @@ cmd_smart() {
 }
 
 cmd_full() {
+  danger_confirm "wipe docker" "Factory reset deletes Docker and containerd state from this host."
   need_root_for_full
 
-  confirm "FACTORY RESET will delete ALL Docker data and wipe /var/lib/docker + /var/lib/containerd. Continue?"
   log "Factory reset starting..."
 
   if have docker && docker info >/dev/null 2>&1; then
@@ -404,28 +423,61 @@ cmd_full() {
   docker network ls || true
 }
 
+cmd_danger() {
+  local danger_cmd="${1:-help}"
+
+  case "$danger_cmd" in
+    help|-h|--help)
+      danger_usage
+      ;;
+    smart)
+      cmd_smart
+      ;;
+    containers)
+      danger_confirm "remove containers" "This removes all containers, including running containers."
+      cmd_containers
+      ;;
+    images)
+      danger_confirm "remove images" "This removes all Docker images and may break future restarts or rollbacks."
+      cmd_images
+      ;;
+    volumes)
+      danger_confirm "remove volumes" "This removes all Docker volumes and can delete persistent application data."
+      cmd_volumes
+      ;;
+    networks)
+      danger_confirm "remove networks" "This removes custom Docker networks and can break service connectivity."
+      cmd_networks
+      ;;
+    cache)
+      danger_confirm "remove cache" "This removes all Docker build cache."
+      cmd_cache
+      ;;
+    full)
+      cmd_full
+      ;;
+    *)
+      danger_usage
+      exit 1
+      ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 dockwipe - Docker cleanup & reset tool
 
 Usage:
-  dockwipe --status
-  dockwipe --analyze
-  dockwipe --plan
-  dockwipe --safe
-  dockwipe --smart
-  dockwipe --containers
-  dockwipe --images
-  dockwipe --volumes
-  dockwipe --networks
-  dockwipe --cache
-  dockwipe --full
+  dockwipe status
+  dockwipe analyze
+  dockwipe plan
+  dockwipe clean
+  dockwipe danger help
 
 Global options:
   --older-than VALUE          Apply Docker prune retention filter, for example 7d or 24h
   --yes                      Do not prompt for safe automation runs
-  --prune-build-cache        Include build cache in --safe cleanup
-  --prune-anonymous-volumes  Include anonymous unused volumes in --safe cleanup
+  --include-build-cache      Include build cache in safe cleanup
   --dry-run                  Print actions without executing
   --quiet                    Less output
   --no-color                 Disable ANSI colors
@@ -433,9 +485,27 @@ Global options:
   --help                     Show this help
 
 Examples:
-  dockwipe --analyze
-  dockwipe --plan --older-than 7d
-  dockwipe --safe --older-than 7d --yes
+  dockwipe status
+  dockwipe plan --older-than 7d
+  dockwipe clean --older-than 7d --yes
+EOF
+}
+
+danger_usage() {
+  cat <<'EOF'
+dockwipe danger - isolated admin operations
+
+Usage:
+  dockwipe danger smart
+  dockwipe danger containers
+  dockwipe danger images
+  dockwipe danger volumes
+  dockwipe danger networks
+  dockwipe danger cache
+  dockwipe danger full
+
+Danger commands require an exact confirmation phrase and ignore --yes.
+Do not run danger commands from cron.
 EOF
 }
 
@@ -469,7 +539,7 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ;;
-    --prune-build-cache) PRUNE_BUILD_CACHE=true ;;
+    --include-build-cache|--prune-build-cache) PRUNE_BUILD_CACHE=true ;;
     --prune-anonymous-volumes) PRUNE_ANON_VOLUMES=true ;;
     --help|-h) print_banner; usage; exit 0 ;;
     --version) echo "dockwipe v$VERSION"; exit 0 ;;
@@ -482,16 +552,19 @@ print_banner
 
 cmd="${ARGS[0]:-}"
 case "$cmd" in
-  --status)     cmd_status ;;
-  --analyze)    cmd_analyze ;;
-  --plan)       cmd_plan ;;
-  --safe)       cmd_safe ;;
-  --smart)      cmd_smart ;;
-  --containers) cmd_containers ;;
-  --images)     cmd_images ;;
-  --volumes)    cmd_volumes ;;
-  --networks)   cmd_networks ;;
-  --cache)      cmd_cache ;;
-  --full)       cmd_full ;;
+  help)              usage ;;
+  version)           echo "dockwipe v$VERSION" ;;
+  status|--status)   cmd_status ;;
+  analyze|--analyze) cmd_analyze ;;
+  plan|--plan)       cmd_plan ;;
+  clean|safe|--safe) cmd_safe ;;
+  danger)            cmd_danger "${ARGS[1]:-help}" ;;
+  --smart)           warn "--smart is deprecated. Use: dockwipe danger smart"; cmd_danger smart ;;
+  --containers)      warn "--containers is deprecated. Use: dockwipe danger containers"; cmd_danger containers ;;
+  --images)          warn "--images is deprecated. Use: dockwipe danger images"; cmd_danger images ;;
+  --volumes)         warn "--volumes is deprecated. Use: dockwipe danger volumes"; cmd_danger volumes ;;
+  --networks)        warn "--networks is deprecated. Use: dockwipe danger networks"; cmd_danger networks ;;
+  --cache)           warn "--cache is deprecated. Use: dockwipe danger cache"; cmd_danger cache ;;
+  --full)            warn "--full is deprecated. Use: dockwipe danger full"; cmd_danger full ;;
   *) usage; exit 1 ;;
 esac

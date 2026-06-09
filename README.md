@@ -21,7 +21,7 @@ chmod +x dockwipe install.sh
 Verify:
 
 ```bash
-dockwipe --help
+dockwipe help
 ```
 
 ## Safe Cleanup
@@ -29,50 +29,49 @@ dockwipe --help
 Preview what Dockwipe will do:
 
 ```bash
-dockwipe --plan
+dockwipe plan
 ```
 
 Run safe cleanup:
 
 ```bash
-dockwipe --safe
+dockwipe clean
 ```
 
 Automation-friendly cleanup:
 
 ```bash
-dockwipe --safe --yes
+dockwipe clean --yes
 ```
 
 Use a retention filter:
 
 ```bash
-dockwipe --safe --older-than 7d --yes
+dockwipe clean --older-than 7d --yes
 ```
 
 Include build cache cleanup:
 
 ```bash
-dockwipe --safe --older-than 7d --prune-build-cache --yes
+dockwipe clean --older-than 7d --include-build-cache --yes
 ```
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `--plan` | Preview safe cleanup behavior |
-| `--safe` | Clean unused resources without stopping running services |
-| `--status` | Show Docker disk usage |
-| `--analyze` | Show Docker usage details |
+| `status` | Show Docker disk usage |
+| `analyze` | Show Docker usage details |
+| `plan` | Preview safe cleanup behavior |
+| `clean` | Clean unused resources without stopping running services |
 | `--older-than VALUE` | Apply a Docker prune retention filter, for example `7d` or `24h` |
 | `--yes` | Skip confirmation for safe automation |
-| `--prune-build-cache` | Include build cache in `--safe` cleanup |
-| `--prune-anonymous-volumes` | Include anonymous unused volumes in `--safe` cleanup |
+| `--include-build-cache` | Include build cache in `clean` |
 | `--dry-run` | Print actions without executing them |
 
 ## Safety
 
-`--safe` uses Docker prune behavior. It does not remove running containers or Docker resources still referenced by containers.
+`clean` uses Docker prune behavior. It does not remove running containers or Docker resources still referenced by containers.
 
 By default:
 
@@ -80,17 +79,13 @@ By default:
 - build cache is skipped
 - running services are preserved
 
-Manual destructive commands still exist for emergency/admin use:
+Manual destructive commands are isolated under:
 
 ```bash
-dockwipe --containers
-dockwipe --images
-dockwipe --volumes
-dockwipe --networks
-dockwipe --full
+dockwipe danger help
 ```
 
-Do not run those from cron.
+Danger commands require an exact confirmation phrase and ignore `--yes`. Do not run them from cron.
 
 ## Cron
 
@@ -103,13 +98,13 @@ sudo mkdir -p /var/log/dockwipe
 Run safe cleanup every morning at 10 AM:
 
 ```cron
-0 10 * * * /usr/local/bin/dockwipe --safe --yes >> /var/log/dockwipe/cleanup.log 2>&1
+0 10 * * * /usr/local/bin/dockwipe clean --yes >> /var/log/dockwipe/cleanup.log 2>&1
 ```
 
 With retention and build cache cleanup:
 
 ```cron
-0 10 * * * /usr/local/bin/dockwipe --safe --older-than 7d --prune-build-cache --yes >> /var/log/dockwipe/cleanup.log 2>&1
+0 10 * * * /usr/local/bin/dockwipe clean --older-than 7d --include-build-cache --yes >> /var/log/dockwipe/cleanup.log 2>&1
 ```
 
 ## Requirements

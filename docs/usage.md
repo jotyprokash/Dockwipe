@@ -3,51 +3,47 @@
 ### Common
 
 ```bash
-dockwipe --analyze
-dockwipe --status
-dockwipe --plan
-dockwipe --safe
+dockwipe analyze
+dockwipe status
+dockwipe plan
+dockwipe clean
 ```
 
 ### Safe cleanup
 
 ```bash
-dockwipe --plan
-dockwipe --safe --yes
-dockwipe --safe --older-than 7d --yes
-dockwipe --safe --older-than 7d --prune-build-cache --yes
+dockwipe plan
+dockwipe clean --yes
+dockwipe clean --older-than 7d --yes
+dockwipe clean --older-than 7d --include-build-cache --yes
 ```
 
 ### Dry run
 
 ```bash
-dockwipe --dry-run --safe --older-than 7d
-dockwipe --dry-run --full
+dockwipe --dry-run clean --older-than 7d
+dockwipe --dry-run danger full
 ```
 
-### Targeted cleanup
+### Danger commands
 
 ```bash
-dockwipe --smart
-dockwipe --containers
-dockwipe --images
-dockwipe --volumes
-dockwipe --networks
-dockwipe --cache
+dockwipe danger help
+dockwipe danger smart
+dockwipe danger containers
+dockwipe danger images
+dockwipe danger volumes
+dockwipe danger networks
+dockwipe danger cache
+dockwipe danger full
 ```
 
-Use targeted cleanup manually only. The recommended dev-server automation command is `dockwipe --safe --yes`.
+Danger commands require an exact confirmation phrase and ignore `--yes`.
 
 ### Cron
 
 Run safe cleanup every morning at 10 AM:
 
 ```cron
-0 10 * * * /usr/local/bin/dockwipe --safe --yes >> /var/log/dockwipe/cleanup.log 2>&1
-```
-
-### Factory reset (destructive)
-
-```bash
-dockwipe --full
+0 10 * * * /usr/local/bin/dockwipe clean --yes >> /var/log/dockwipe/cleanup.log 2>&1
 ```

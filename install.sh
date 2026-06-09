@@ -25,6 +25,6 @@ fi
 
 echo ""
 echo "Try:"
-echo "  dockwipe --analyze"
-echo "  dockwipe --plan"
-echo "  dockwipe --safe --yes"
+echo "  dockwipe status"
+echo "  dockwipe plan"
+echo "  dockwipe clean --yes"
